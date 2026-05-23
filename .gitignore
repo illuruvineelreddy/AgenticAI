@@ -1,99 +1,61 @@
 ```
-# Dependencies
-node_modules/
-.venv/
-venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
-pip-log.txt
-pip-selfcheck.json
+# Compressed archives
+*.tar.gz
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 
-# Environment variables
+# Environment files
 .env
 .env.local
 .env.*
 
-# Python
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-.coverage
-coverage/
-htmlcov/
-.pytest_cache/
-.tox/
-.nox/
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
+# Logs and temporary files
 *.log
-*.pot
-*.po
-*.mo
-*.db
-*.sqlite
-*.sqlite3
-*.db-shm
-*.db-wal
-*.db-journal
-*.lock
-*.pid
-*.seed
-*.id
-*.idx
-*.dat
 *.tmp
-*.temp
-*.bak
-*.orig
-*.rej
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
 
-# Build artifacts
-dist/
-build/
-*.egg-info/
-.eggs/
-.installed.cfg
-lib/
-lib64/
-parts/
-sdist/
-develop-eggs/
-.eggs/
-
-# IDE
+# Editors and IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# Docker
-.dockerenv
-.DS_Store
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+target/
+.gradle/
 
-# OS
+# System files
 .DS_Store
 Thumbs.db
-ehthumbs.db
-Icon?
-.apdisk
 
-# Logs
-*.log
-
-# Coverage
-.coverage*
+# Coverage reports
+coverage/
 htmlcov/
 .coverage
 
