@@ -264,3 +264,103 @@ async def get_metrics():
             "execution_orders": "active",
         },
     }
+
+# =============================================================================
+# BACKTEST AND REPLAY ROUTES
+# =============================================================================
+
+from pydantic import BaseModel
+
+class BacktestRequest(BaseModel):
+    strategy: str
+    symbol: str
+    start_date: str
+    end_date: str
+    initial_capital: float = 100000.0
+    is_delivery: bool = False
+
+class ReplayRequest(BaseModel):
+    symbol: str
+    start_date: str
+    end_date: str
+    speed: float = 1.0
+
+@router.post("/backtest/run")
+async def run_backtest(req: BacktestRequest):
+    """Run a strategy backtest."""
+    from backtesting.engine import BacktestEngine
+    
+    try:
+        start_dt = datetime.fromisoformat(req.start_date.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(req.end_date.replace('Z', '+00:00'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO-8601 format.")
+        
+    engine = BacktestEngine()
+    result = await engine.run(
+        strategy_name=req.strategy,
+        symbol=req.symbol,
+        start_date=start_dt,
+        end_date=end_dt,
+        initial_capital=req.initial_capital,
+        is_delivery=req.is_delivery
+    )
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+        
+    return result
+
+@router.post("/replay/start")
+async def start_replay(req: ReplayRequest):
+    """Start historical data replay."""
+    from replay_engine.engine import replay_engine
+    
+    try:
+        start_dt = datetime.fromisoformat(req.start_date.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(req.end_date.replace('Z', '+00:00'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use ISO-8601 format.")
+        
+    success = await replay_engine.start_replay(
+        symbol=req.symbol,
+        start=start_dt,
+        end=end_dt,
+        speed=req.speed
+    )
+    
+    return {"status": "success" if success else "failed"}
+
+@router.get("/replay/status")
+async def get_replay_status():
+    """Get replay status."""
+    from replay_engine.engine import replay_engine
+    return await replay_engine.get_status()
+
+@router.post("/replay/stop")
+async def stop_replay():
+    """Stop data replay."""
+    from replay_engine.engine import replay_engine
+    await replay_engine.stop_replay()
+    return {"status": "success"}
+
+@router.post("/replay/pause")
+async def pause_replay():
+    """Pause data replay."""
+    from replay_engine.engine import replay_engine
+    await replay_engine.pause_replay()
+    return {"status": "success"}
+
+@router.post("/replay/resume")
+async def resume_replay():
+    """Resume data replay."""
+    from replay_engine.engine import replay_engine
+    await replay_engine.resume_replay()
+    return {"status": "success"}
+
+@router.post("/replay/speed")
+async def set_replay_speed(speed: float):
+    """Change replay speed multiplier."""
+    from replay_engine.engine import replay_engine
+    replay_engine.speed = speed
+    return {"status": "success", "speed": speed}

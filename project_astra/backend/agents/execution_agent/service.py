@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import Enum
 import structlog
 
+from sqlalchemy import select
 from utils.redis_streams import stream_manager
 from utils.config import settings
 
@@ -171,7 +172,7 @@ class ExecutionService:
             trade_data = message.get('data', {})
             
             # Create order from approved trade
-            order = self._create_order(trade_data)
+            order = await self._create_order(trade_data)
             
             if order:
                 # Add to pending orders
@@ -189,20 +190,31 @@ class ExecutionService:
         except Exception as e:
             logger.error("Error processing approved trade", error=str(e))
     
-    def _create_order(self, trade_data: dict) -> Optional[Order]:
+    async def _create_order(self, trade_data: dict) -> Optional[Order]:
         """Create order from trade data."""
         symbol = trade_data.get('symbol', '')
         entry_price = trade_data.get('entry_price', 0.0)
         quantity = trade_data.get('approved_quantity', 0)
+        signal_id = trade_data.get('signal_id', 0)
         
         if not symbol or quantity <= 0:
             return None
         
-        # Determine side based on strategy signal
-        # For simplicity, assume LONG for now
+        # Determine side based on strategy signal direction from DB
         side = 'BUY'
+        try:
+            from database.connection import async_session_factory
+            from database.models import StrategySignal
+            async with async_session_factory() as session:
+                stmt = select(StrategySignal).where(StrategySignal.id == signal_id)
+                res = await session.execute(stmt)
+                sig = res.scalar_one_or_none()
+                if sig and sig.direction:
+                    side = 'BUY' if sig.direction == 'LONG' else 'SELL'
+        except Exception as e:
+            logger.error("Failed to query signal direction for order creation", signal_id=signal_id, error=str(e))
         
-        return Order(
+        order = Order(
             order_id=f"ORD_{uuid.uuid4().hex[:12]}",
             symbol=symbol,
             exchange='NSE',
@@ -214,6 +226,11 @@ class ExecutionService:
             product='MIS',
             status=OrderStatus.CREATED,
         )
+        
+        # Save order to database
+        await self._save_order_to_db(order, signal_id)
+        
+        return order
     
     async def _process_pending_orders(self):
         """Process pending orders with simulated latency."""
@@ -286,6 +303,9 @@ class ExecutionService:
             order.average_price = fill_price
             order.updated_at = asyncio.get_event_loop().time()
             await self._publish_order_update(order)
+            
+            # Update position (partial fill complete)
+            await self._update_position(order, fill_price)
         else:
             # Full fill
             await self._create_fill(order, order.quantity, fill_price)
@@ -296,7 +316,7 @@ class ExecutionService:
             await self._publish_order_update(order)
             
             # Update position
-            self._update_position(order, fill_price)
+            await self._update_position(order, fill_price)
     
     async def _create_fill(self, order: Order, quantity: int, price: float):
         """Create fill record with charges calculation."""
@@ -334,6 +354,9 @@ class ExecutionService:
             fill_timestamp=asyncio.get_event_loop().time(),
         )
         
+        # Save fill to database
+        await self._save_fill_to_db(fill)
+
         # Publish fill
         await stream_manager.publish(
             stream_name=stream_manager.STREAMS['EXECUTION_UPDATES'],
@@ -350,7 +373,7 @@ class ExecutionService:
             charges=total_charges,
         )
     
-    def _update_position(self, order: Order, fill_price: float):
+    async def _update_position(self, order: Order, fill_price: float):
         """Update position after fill."""
         symbol = order.symbol
         
@@ -377,9 +400,18 @@ class ExecutionService:
                 pos['quantity'] -= order.quantity
                 if pos['quantity'] <= 0:
                     del self.positions[symbol]
+                    
+        # Persist position to database
+        p_qty = self.positions[symbol]['quantity'] if symbol in self.positions else 0
+        p_avg = self.positions[symbol]['avg_price'] if symbol in self.positions else 0.0
+        p_side = self.positions[symbol]['side'] if symbol in self.positions else 'LONG'
+        await self._save_position_to_db(symbol, p_qty, p_avg, p_side)
     
     async def _publish_order_update(self, order: Order):
         """Publish order status update."""
+        # Update order status in database
+        await self._update_order_status_in_db(order)
+
         await stream_manager.publish(
             stream_name=stream_manager.STREAMS['EXECUTION_UPDATES'],
             event_type='order_update',
@@ -390,7 +422,127 @@ class ExecutionService:
         # Also send to WebSocket
         from websocket.manager import ws_manager
         await ws_manager.send_order_update(order.to_dict())
-    
+
+    async def _save_order_to_db(self, order: Order, signal_id: int):
+        try:
+            from database.connection import async_session_factory
+            from database.models import Order as DbOrder, TradeCandidate
+            
+            async with async_session_factory() as session:
+                # Get candidate_id
+                stmt = select(TradeCandidate).where(TradeCandidate.signal_id == signal_id)
+                res = await session.execute(stmt)
+                cand = res.scalar_one_or_none()
+                candidate_id = cand.id if cand else None
+                
+                db_order = DbOrder(
+                    order_id=order.order_id,
+                    candidate_id=candidate_id,
+                    symbol=order.symbol,
+                    exchange=order.exchange,
+                    side=order.side,
+                    order_type=order.order_type,
+                    quantity=order.quantity,
+                    price=float(order.price) if order.price else None,
+                    status=order.status.value,
+                    filled_quantity=order.filled_quantity,
+                    average_price=float(order.average_price) if order.average_price else None,
+                    placed_at=datetime.utcnow()
+                )
+                session.add(db_order)
+                await session.commit()
+        except Exception as e:
+            logger.error("Failed to save order to database", order_id=order.order_id, error=str(e))
+
+    async def _update_order_status_in_db(self, order: Order):
+        try:
+            from database.connection import async_session_factory
+            from database.models import Order as DbOrder
+            
+            async with async_session_factory() as session:
+                stmt = select(DbOrder).where(DbOrder.order_id == order.order_id)
+                res = await session.execute(stmt)
+                db_order = res.scalar_one_or_none()
+                
+                if db_order:
+                    db_order.status = order.status.value
+                    db_order.filled_quantity = order.filled_quantity
+                    db_order.average_price = float(order.average_price) if order.average_price else None
+                    await session.commit()
+        except Exception as e:
+            logger.error("Failed to update order status in database", order_id=order.order_id, error=str(e))
+
+    async def _save_fill_to_db(self, fill_obj: Fill):
+        try:
+            from database.connection import async_session_factory
+            from database.models import Fill as DbFill, Order as DbOrder
+            
+            async with async_session_factory() as session:
+                stmt = select(DbOrder).where(DbOrder.order_id == fill_obj.order_id)
+                res = await session.execute(stmt)
+                db_order = res.scalar_one_or_none()
+                order_db_id = db_order.id if db_order else None
+                
+                db_fill = DbFill(
+                    order_id=order_db_id,
+                    fill_id=fill_obj.fill_id,
+                    symbol=fill_obj.symbol,
+                    side=fill_obj.side,
+                    quantity=fill_obj.quantity,
+                    price=float(fill_obj.price),
+                    brokerage=float(fill_obj.brokerage),
+                    stt=float(fill_obj.stt),
+                    exchange_charges=float(fill_obj.exchange_charges),
+                    gst=float(fill_obj.gst),
+                    stamp_duty=float(fill_obj.stamp_duty),
+                    total_charges=float(fill_obj.total_charges),
+                    pnl=float(fill_obj.pnl) if fill_obj.pnl else None,
+                    fill_timestamp=datetime.utcnow()
+                )
+                session.add(db_fill)
+                await session.commit()
+        except Exception as e:
+            logger.error("Failed to save fill to database", fill_id=fill_obj.fill_id, error=str(e))
+
+    async def _save_position_to_db(self, symbol: str, quantity: int, average_price: float, side: str):
+        try:
+            from database.connection import async_session_factory
+            from database.models import Position as DbPosition
+            
+            async with async_session_factory() as session:
+                stmt = select(DbPosition).where(DbPosition.symbol == symbol, DbPosition.status == 'OPEN')
+                res = await session.execute(stmt)
+                pos = res.scalar_one_or_none()
+                
+                if pos:
+                    if quantity <= 0:
+                        pos.quantity = 0
+                        pos.status = 'CLOSED'
+                        pos.exit_time = datetime.utcnow()
+                    else:
+                        pos.quantity = quantity
+                        pos.average_price = float(average_price)
+                        pos.current_price = float(average_price)
+                else:
+                    if quantity > 0:
+                        new_pos = DbPosition(
+                            symbol=symbol,
+                            exchange='NSE',
+                            side=side,
+                            quantity=quantity,
+                            average_price=float(average_price),
+                            current_price=float(average_price),
+                            unrealized_pnl=0.0,
+                            realized_pnl=0.0,
+                            entry_time=datetime.utcnow(),
+                            status='OPEN'
+                        )
+                        session.add(new_pos)
+                
+                await session.commit()
+        except Exception as e:
+            logger.error("Failed to save position to database", symbol=symbol, error=str(e))
+
     async def stop(self):
         """Stop execution service."""
         self.running = False

@@ -56,13 +56,17 @@ class MarketDataService:
         self.max_reconnect_attempts = 10
         self.last_tick_time: Dict[str, float] = {}
         
+        # Initialize unified broker client
+        from brokers import get_broker_client
+        self.broker = get_broker_client(settings.broker_name)
+        
         # Mock mode for development without broker credentials
         self.mock_mode = not settings.broker_api_key
         
     async def run(self):
         """Main service loop."""
         self.running = True
-        logger.info("Market Data Service starting", mock_mode=self.mock_mode)
+        logger.info("Market Data Service starting", mock_mode=self.mock_mode, broker=settings.broker_name)
         
         attempt = 0
         while self.running and attempt < self.max_reconnect_attempts:
@@ -98,41 +102,52 @@ class MarketDataService:
     async def _connect_to_broker(self):
         """Connect to actual broker WebSocket."""
         logger.info("Connecting to broker WebSocket", broker=settings.broker_name)
-        
-        # TODO: Implement actual broker WebSocket connections
-        # For now, this is a placeholder for future implementation
-        
-        if settings.broker_name == "zerodha":
-            await self._connect_zerodha()
-        elif settings.broker_name == "upstox":
-            await self._connect_upstox()
-        elif settings.broker_name == "fyers":
-            await self._connect_fyers()
-        elif settings.broker_name == "dhan":
-            await self._connect_dhan()
+        connected = await self.broker.connect()
+        if connected:
+            self.connected = True
+            logger.info("Successfully connected to broker client", broker=settings.broker_name)
+            await self._run_broker_loop()
         else:
-            raise ValueError(f"Unsupported broker: {settings.broker_name}")
-    
-    async def _connect_zerodha(self):
-        """Connect to Zerodha Kite WebSocket."""
-        # Placeholder for Zerodha implementation
-        logger.warning("Zerodha WebSocket not yet implemented - using mock mode")
-        self.mock_mode = True
-    
-    async def _connect_upstox(self):
-        """Connect to Upstox WebSocket."""
-        logger.warning("Upstox WebSocket not yet implemented - using mock mode")
-        self.mock_mode = True
-    
-    async def _connect_fyers(self):
-        """Connect to Fyers WebSocket."""
-        logger.warning("Fyers WebSocket not yet implemented - using mock mode")
-        self.mock_mode = True
-    
-    async def _connect_dhan(self):
-        """Connect to Dhan WebSocket."""
-        logger.warning("Dhan WebSocket not yet implemented - using mock mode")
-        self.mock_mode = True
+            raise ConnectionError(f"Failed to connect to broker: {settings.broker_name}")
+            
+    async def _run_broker_loop(self):
+        """Run broker data fetch loop using the broker instance."""
+        import random
+        logger.info("Starting broker tick retrieval loop", broker=settings.broker_name)
+        
+        symbols = settings.watchlist_nifty50[:5]  # Start with 5 symbols
+        
+        while self.running:
+            for symbol in symbols:
+                if not self.running:
+                    break
+                try:
+                    q = await self.broker.get_quote(symbol)
+                    tick = Tick(
+                        symbol=q["symbol"],
+                        exchange=q.get("exchange", "NSE"),
+                        price=q["last_price"],
+                        volume=q.get("volume", 0),
+                        bid_price=q["last_price"] - 0.05,
+                        ask_price=q["last_price"] + 0.05,
+                        bid_qty=random.randint(100, 5000),
+                        ask_qty=random.randint(100, 5000),
+                        total_buy_qty=q.get("buy_demand", 10000),
+                        total_sell_qty=q.get("sell_demand", 10000),
+                        timestamp=q.get("timestamp", time.time()),
+                        ltp=q["last_price"],
+                        ohlc=q.get("ohlc", {
+                            'open': q["last_price"],
+                            'high': q["last_price"],
+                            'low': q["last_price"],
+                            'close': q["last_price"]
+                        })
+                    )
+                    await self._process_tick(tick)
+                except Exception as e:
+                    logger.error("Error fetching broker quote", symbol=symbol, error=str(e))
+            await asyncio.sleep(0.5)
+
     
     async def _run_mock_mode(self):
         """Run in mock/simulation mode for development."""

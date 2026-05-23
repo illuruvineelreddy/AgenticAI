@@ -8,7 +8,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass, asdict
-import aioredis
+import redis.asyncio as aioredis
 import structlog
 
 from utils.config import settings

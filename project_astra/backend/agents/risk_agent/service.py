@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 import structlog
 
+from sqlalchemy import select
 from utils.redis_streams import stream_manager
 from utils.config import settings
 
@@ -102,6 +103,9 @@ class RiskService:
             assessment = await self._assess_signal(signal_data)
             
             if assessment:
+                # Save risk assessment and checks to database
+                await self._save_risk_assessment_to_db(assessment)
+
                 # Publish result
                 if assessment.result == RiskCheckResult.APPROVED:
                     # Send to execution
@@ -292,6 +296,46 @@ class RiskService:
         self.total_risk_exposure += delta
         self.total_risk_exposure = max(0, self.total_risk_exposure)
     
+    async def _save_risk_assessment_to_db(self, assessment: RiskAssessment):
+        """Save risk assessment and checks to database."""
+        try:
+            from database.connection import async_session_factory
+            from database.models import StrategySignal, RiskCheck
+            
+            async with async_session_factory() as session:
+                # Update StrategySignal status
+                stmt = select(StrategySignal).where(StrategySignal.id == assessment.signal_id)
+                res = await session.execute(stmt)
+                signal = res.scalar_one_or_none()
+                
+                if signal:
+                    signal.status = 'APPROVED' if assessment.result == RiskCheckResult.APPROVED else 'REJECTED'
+                    if assessment.result == RiskCheckResult.REJECTED:
+                        signal.risk_rejection_reason = assessment.rejection_reason
+                
+                # Add RiskChecks
+                db_checks = []
+                for chk in assessment.checks_passed:
+                    db_checks.append(RiskCheck(
+                        signal_id=assessment.signal_id,
+                        check_type=chk,
+                        check_result=True,
+                        reason="Check passed"
+                    ))
+                for chk in assessment.checks_failed:
+                    db_checks.append(RiskCheck(
+                        signal_id=assessment.signal_id,
+                        check_type=chk,
+                        check_result=False,
+                        reason=assessment.rejection_reason
+                    ))
+                
+                session.add_all(db_checks)
+                await session.commit()
+                
+        except Exception as e:
+            logger.error("Failed to save risk assessment to database", signal_id=assessment.signal_id, error=str(e))
+
     async def stop(self):
         """Stop risk service."""
         self.running = False

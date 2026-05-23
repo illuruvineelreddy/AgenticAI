@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean, Text, JSON,
-    ForeignKey, Index, UniqueConstraint, Numeric
+    ForeignKey, Index, UniqueConstraint, Numeric, BigInteger
 )
 from sqlalchemy.dialects.postgresql import TIMESTAMP, DOUBLE_PRECISION
 from sqlalchemy.ext.declarative import declarative_base

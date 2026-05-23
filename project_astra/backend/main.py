@@ -19,6 +19,12 @@ from agents.ml_agent.service import MLService
 from agents.risk_agent.service import RiskService
 from agents.execution_agent.service import ExecutionService
 from agents.monitoring_agent.service import MonitoringService
+from candle_engine.engine import CandleEngine
+from feature_engine.service import FeatureService
+from agents.strategy_agents import (
+    TrendStrategyAgent, BreakoutStrategyAgent, VwapStrategyAgent,
+    OptionsStrategyAgent, ScalpingStrategyAgent
+)
 from utils.config import settings
 from utils.metrics import setup_metrics
 
@@ -66,11 +72,34 @@ async def lifespan(app: FastAPI):
     tasks.append(asyncio.create_task(market_data_service.run()))
     logger.info("Market data service started")
     
+    # Start candle engine
+    candle_engine = CandleEngine()
+    tasks.append(asyncio.create_task(candle_engine.run()))
+    logger.info("Candle engine started")
+
+    # Start feature service
+    feature_service = FeatureService()
+    tasks.append(asyncio.create_task(feature_service.run()))
+    logger.info("Feature service started")
+
     # Start regime detection service
     regime_service = RegimeService()
     tasks.append(asyncio.create_task(regime_service.run()))
     logger.info("Regime service started")
     
+    # Start strategy agents
+    trend_agent = TrendStrategyAgent()
+    tasks.append(asyncio.create_task(trend_agent.run()))
+    breakout_agent = BreakoutStrategyAgent()
+    tasks.append(asyncio.create_task(breakout_agent.run()))
+    vwap_agent = VwapStrategyAgent()
+    tasks.append(asyncio.create_task(vwap_agent.run()))
+    options_agent = OptionsStrategyAgent()
+    tasks.append(asyncio.create_task(options_agent.run()))
+    scalping_agent = ScalpingStrategyAgent()
+    tasks.append(asyncio.create_task(scalping_agent.run()))
+    logger.info("All strategy agents started")
+
     # Start ML inference service
     ml_service = MLService()
     tasks.append(asyncio.create_task(ml_service.run()))
